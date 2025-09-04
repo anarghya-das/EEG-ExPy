@@ -86,9 +86,14 @@ class EEG:
         self.other = other
         self.backend = self._get_backend(self.device_name)
         self.initialize_backend()
-        self.n_channels = len(EEG_INDICES[self.device_name])
-        self.sfreq = SAMPLE_FREQS[self.device_name]
-        self.channels = EEG_CHANNELS[self.device_name]
+        # Populate static device metadata when available; for generic LSL, metadata
+        # is populated dynamically by the inlet and may not exist here.
+        try:
+            self.n_channels = len(EEG_INDICES[self.device_name])
+            self.sfreq = SAMPLE_FREQS[self.device_name]
+            self.channels = EEG_CHANNELS[self.device_name]
+        except KeyError:
+            pass
         self.ch_names = ch_names
 
     def initialize_backend(self):
@@ -99,12 +104,18 @@ class EEG:
             self._init_muselsl()
             self._muse_get_recent()  # run this at initialization to get some
             # stream metadata into the eeg class
+        elif self.backend == "lsl":
+            # Generic LSL inlet for any EEG stream
+            self._init_lsl()
+            self._lsl_get_recent()  # prime stream metadata
 
     def _get_backend(self, device_name):
         if device_name in brainflow_devices:
             return "brainflow"
         elif device_name in ["muse2016", "muse2", "museS"]:
             return "muselsl"
+        elif device_name in ["lsl", "LSL"]:
+            return "lsl"
 
     #####################
     #   MUSE functions  #
@@ -168,6 +179,7 @@ class EEG:
         self.sfreq = sfreq
         self.info = info
         self.n_chans = n_chans
+        self.n_channels = n_chans
 
         timeout = (n_samples / sfreq) + 0.5
         samples, timestamps = inlet.pull_chunk(timeout=timeout, max_samples=n_samples)
@@ -182,6 +194,85 @@ class EEG:
             lab = ch.child_value("label")
             if lab != "":
                 ch_names.append(lab)
+
+        df = pd.DataFrame(samples, index=timestamps, columns=ch_names)
+        return df
+
+    #####################
+    #   LSL functions   #
+    #####################
+    def _init_lsl(self):
+        # Generic LSL: keep a reusable inlet for recent data pulls
+        self._lsl_recent_inlet = None
+
+    def _start_lsl(self, duration):
+        # For generic LSL EEG streams we do not start the device stream here;
+        # we only create a markers outlet and optionally record the incoming
+        # EEG stream to file using the muselsl recorder utility.
+        # Create markers stream outlet
+        self.lsl_StreamInfo = StreamInfo("Markers", "Markers", 1, 0, "int32", "eegnb_markers")
+        self.lsl_StreamOutlet = StreamOutlet(self.lsl_StreamInfo)
+
+        # Start a lightweight background recording process from LSL to CSV if requested
+        if duration is not None and self.save_fn:
+            logger.info(f"Starting LSL recording for {duration}s to {self.save_fn}")
+            self.recording = Process(target=record, args=(duration, self.save_fn))
+            self.recording.start()
+
+        # Allow stream buffers to fill a bit, then mark start
+        time.sleep(2)
+        self.stream_started = True
+        self.push_sample([99], timestamp=time.time())
+
+    def _lsl_push_sample(self, marker, timestamp):
+        # Push to the generic LSL marker outlet; ensure list-like
+        if isinstance(marker, (int, np.integer)):
+            marker = [int(marker)]
+        self.lsl_StreamOutlet.push_sample(marker, timestamp)
+
+    def _lsl_get_recent(self, n_samples: int = 256, restart_inlet: bool = False):
+        # Reuse inlet if available
+        if self._lsl_recent_inlet and not restart_inlet:
+            inlet = self._lsl_recent_inlet
+        else:
+            streams = resolve_byprop("type", "EEG", timeout=mlsl_cnsts.LSL_SCAN_TIMEOUT)
+            if not streams:
+                raise Exception("Couldn't find any LSL EEG stream. Is your device streaming?")
+            inlet = StreamInlet(streams[0], max_chunklen=mlsl_cnsts.LSL_EEG_CHUNK)
+            self._lsl_recent_inlet = inlet
+
+        info = inlet.info()
+        sfreq = info.nominal_srate()
+        description = info.desc()
+        n_chans = info.channel_count()
+
+        self.sfreq = sfreq
+        self.info = info
+        self.n_chans = n_chans
+        self.n_channels = n_chans
+
+        timeout = (n_samples / sfreq) + 0.5 if sfreq else 2.0
+        samples, timestamps = inlet.pull_chunk(timeout=timeout, max_samples=n_samples)
+
+        samples = np.array(samples)
+        timestamps = np.array(timestamps)
+
+        # Attempt to parse channel labels from stream metadata; fallback to generic names
+        ch_names = []
+        try:
+            ch = description.child("channels").first_child()
+            if ch:  # if metadata present
+                ch_names = [ch.child_value("label")]
+                for i in range(n_chans - 1):
+                    ch = ch.next_sibling() 
+                    lab = ch.child_value("label")
+                    if lab != "":
+                        ch_names.append(lab)
+        except Exception:
+            ch_names = []
+
+        if not ch_names or len(ch_names) != n_chans:
+            ch_names = [f"eeg_{i}" for i in range(n_chans)]
 
         df = pd.DataFrame(samples, index=timestamps, columns=ch_names)
         return df
@@ -416,6 +507,8 @@ class EEG:
             self.markers = []
         elif self.backend == "muselsl":
             self._start_muse(duration)
+        elif self.backend == "lsl":
+            self._start_lsl(duration)
 
     def push_sample(self, marker, timestamp):
         """
@@ -429,11 +522,15 @@ class EEG:
             self._brainflow_push_sample(marker=marker)
         elif self.backend == "muselsl":
             self._muse_push_sample(marker=marker, timestamp=timestamp)
+        elif self.backend == "lsl":
+            self._lsl_push_sample(marker=marker, timestamp=timestamp)
 
     def stop(self):
         if self.backend == "brainflow":
             self._stop_brainflow()
         elif self.backend == "muselsl":
+            pass
+        elif self.backend == "lsl":
             pass
 
     def get_recent(self, n_samples: int = 256):
@@ -449,6 +546,8 @@ class EEG:
             df = self._brainflow_get_recent(n_samples)
         elif self.backend == "muselsl":
             df = self._muse_get_recent(n_samples)
+        elif self.backend == "lsl":
+            df = self._lsl_get_recent(n_samples)
         else:
             raise ValueError(f"Unknown backend {self.backend}")
 

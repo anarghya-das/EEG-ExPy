@@ -14,6 +14,7 @@ def device_prompt() -> EEG:
     # boards is a mapping from board code to board description
     boards = {
         "none": "None",
+        "lsl": "Generic LSL (EEG)",
         "muse2016": "Muse (2016)",
         "muse2": "Muse 2",
         "museS": "Muse S",

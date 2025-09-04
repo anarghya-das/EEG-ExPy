@@ -10,11 +10,32 @@ from eegnb.devices.eeg import EEG
 from eegnb.experiments import VisualN170, Experiment
 from eegnb.experiments import VisualP300
 from eegnb.experiments import VisualSSVEP
-from eegnb.experiments import AuditoryOddball
+# AuditoryOddball is unavailable on macOS Apple Silicon due to PTB limitations.
+try:
+    from eegnb.experiments import AuditoryOddball
+    _HAVE_AOB = True
+except Exception:
+    AuditoryOddball = None  # type: ignore
+    _HAVE_AOB = False
 from eegnb.experiments.visual_cueing import cueing
 from eegnb.experiments.visual_codeprose import codeprose
-from eegnb.experiments.auditory_oddball import diaconescu
-from eegnb.experiments.auditory_ssaep import ssaep, ssaep_onefreq
+
+# Lazy/guarded imports for audio experiments to avoid hard dependency on
+# PsychToolbox or other audio backends unless the user selects them.
+try:
+    from eegnb.experiments.auditory_oddball import diaconescu  # imports aMMN -> sound
+    _HAVE_DIAC = True
+except Exception:
+    diaconescu = None  # type: ignore
+    _HAVE_DIAC = False
+
+try:
+    from eegnb.experiments.auditory_ssaep import ssaep, ssaep_onefreq
+    _HAVE_SSAEP = True
+except Exception:
+    ssaep = None  # type: ignore
+    ssaep_onefreq = None  # type: ignore
+    _HAVE_SSAEP = False
 from typing import Optional
 
 
@@ -25,11 +46,17 @@ experiments = {
     "visual-SSVEP": VisualSSVEP(),
     "visual-cue": cueing,
     "visual-codeprose": codeprose,
-    "auditory-SSAEP orig": ssaep,
-    "auditory-SSAEP onefreq": ssaep_onefreq,
-    "auditory-oddball orig": AuditoryOddball(),
-    "auditory-oddball diaconescu": diaconescu,
 }
+
+if _HAVE_SSAEP:
+    experiments["auditory-SSAEP orig"] = ssaep
+    experiments["auditory-SSAEP onefreq"] = ssaep_onefreq
+
+if _HAVE_DIAC:
+    experiments["auditory-oddball diaconescu"] = diaconescu
+
+if _HAVE_AOB:
+    experiments["auditory-oddball orig"] = AuditoryOddball()
 
 
 def get_exp_desc(exp: str):

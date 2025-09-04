@@ -42,13 +42,15 @@ openbci_devices = ['ganglion', 'ganglion_wifi', 'cyton', 'cyton_wifi', 'cyton_da
 muse_devices = ['muse' + model + sfx for model in ['2016', '2', 'S'] for sfx in ['', '_bfn', '_bfb']]
 neurosity_devices = ['notion1', 'notion2', 'crown']
 gtec_devices = ['unicorn']
-alltesteddevices = openbci_devices + muse_devices + neurosity_devices + gtec_devices
+lsl_devices = ['lsl']  # generic LSL streams
+alltesteddevices = openbci_devices + muse_devices + neurosity_devices + gtec_devices + lsl_devices
 thres_stds = {}
 for device in alltesteddevices: 
     if device in openbci_devices: thres_stds[device] = [1,9]
     elif device in muse_devices: thres_stds[device] = [1,18]
     elif device in neurosity_devices: thres_stds[device] = [1,15]
     elif device in gtec_devices: thres_stds[device] = [1,15]
+    elif device in lsl_devices: thres_stds[device] = [1,15]
 
 
 def load_csv_as_raw(
@@ -396,7 +398,7 @@ def channel_filter(
     verbose: bool = False,
 ) -> np.ndarray:
     """Inspired by viewer_v2.py in muse-lsl"""
-    if device_backend == "muselsl":
+    if device_backend in ("muselsl", "lsl"):
         pass
     elif device_backend == "brainflow":
         if 'muse' not in device_name: # hacky; muse brainflow devices do in fact seem to be in correct units
