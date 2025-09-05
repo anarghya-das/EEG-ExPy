@@ -1,32 +1,30 @@
 """Generate sound-only auditory oddball stimulus presentation.
 """
 
+from typing import Optional
+from eegnb.devices.eeg import EEG
+from eegnb import generate_save_fn
+from pylsl import StreamInfo, StreamOutlet
+from psychopy import visual, core, event, sound
+from pandas import DataFrame
+import numpy as np
+from optparse import OptionParser
+import time
 from psychopy import prefs
-#change the pref libraty to PTB and set the latency mode to high precision
+# change the pref libraty to PTB and set the latency mode to high precision
 prefs.hardware['audioLib'] = 'PTB'
 prefs.hardware['audioLatencyMode'] = 3
 
-import time
-from optparse import OptionParser
 
-import numpy as np
-from pandas import DataFrame
-from psychopy import visual, core, event, sound
-from pylsl import StreamInfo, StreamOutlet
-
-from eegnb import generate_save_fn
-from eegnb.devices.eeg import EEG
-from typing import Optional
-
-#from eegnb.stimuli import FACE_HOUSE
+# from eegnb.stimuli import FACE_HOUSE
 
 
-def present(eeg: Optional[EEG]=None, save_fn=None,
+def present(eeg: Optional[EEG] = None, save_fn=None,
             stim_types=None, itis=None, additional_labels={},
-            secs=0.07, volume=0.8,tone1_hz =440, tone2_hz = 528,
+            secs=0.07, volume=0.8, tone1_hz=440, tone2_hz=528,
             do_fixation=True):
 
-    soa = 0 # ?
+    soa = 0  # ?
 
     # additional_labels is dict with column names as keys and column vecs as values,
     # that will be added to the dataframe
@@ -38,7 +36,8 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
     # info = StreamInfo('Markers', 'Markers', 1, 0, 'int32', 'myuidw43536')
     # info = StreamInfo('Markers', 'Markers', 1 + len(additional_labels), 0, 'int32', 'myuidw43536')
     info = StreamInfo(
-        "Markers", "Markers", 1 + len(additional_labels), 0, "float32", "myuidw43536"
+        "Markers", "Markers", 1 +
+        len(additional_labels), 0, "float32", "myuidw43536"
     )
 
     outlet = StreamOutlet(info)
@@ -49,7 +48,8 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
 
     # Initialize stimuli
     # aud1 = sound.Sound('C', octave=5, sampleRate=44100, secs=secs)
-    aud1 = sound.Sound(tone1_hz, secs=secs)  # , octave=5, sampleRate=44100, secs=secs)
+    # , octave=5, sampleRate=44100, secs=secs)
+    aud1 = sound.Sound(tone1_hz, secs=secs)
     aud1.setVolume(volume)
 
     # aud2 = sound.Sound('D', octave=6, sampleRate=44100, secs=secs)
@@ -60,7 +60,7 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
     # Setup trial list
     trials = DataFrame(dict(sound_ind=stim_types, iti=itis))
 
-    record_duration_int = int(round(trials.iti.values.sum(),-1))
+    record_duration_int = int(round(trials.iti.values.sum(), -1))
     record_duration_float = np.float32(record_duration_int)
 
     for col_name, col_vec in additional_labels.items():
@@ -69,8 +69,9 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
     if do_fixation:
         # Setup graphics
         mywin = visual.Window(
-        [1920, 1080], monitor="testMonitor", units="deg", fullscr=True)
-        fixation = visual.GratingStim(win=mywin, size=0.2, pos=[0, 0], sf=0, rgb=[1, 0, 0])
+            [1920, 1080], monitor="testMonitor", units="deg", fullscr=True)
+        fixation = visual.GratingStim(win=mywin, size=0.2, pos=[
+                                      0, 0], sf=0, rgb=[1, 0, 0])
         fixation.setAutoDraw(True)
         mywin.flip()
 
@@ -82,7 +83,8 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
         if save_fn is None:  # If no save_fn passed, generate a new unnamed save file
             # random_id = random.randint(1000,10000)
             random_id = 9999
-            save_fn = generate_save_fn(eeg.device_name, "auditory_erp_arrayin", random_id, random_id, data_dir="unnamed")
+            save_fn = generate_save_fn(
+                eeg.device_name, "auditory_erp_arrayin", random_id, random_id, data_dir="unnamed")
             print(
                 f"No path for a save file was passed to the experiment. Saving data to {save_fn}"
             )
@@ -106,26 +108,25 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
             additional_stamps += [trial[k]]
 
         # Send marker
-        #timestamp = time.time()
+        # timestamp = time.time()
         # outlet.push_sample([markernames[ind]], timestamp)
 
-        #outlet.push_sample(additional_stamps + [markernames[ind]], timestamp)
+        # outlet.push_sample(additional_stamps + [markernames[ind]], timestamp)
 
         # Offset
         # time.sleep(soa)
         # if (time.time() - start) > record_duration:
         #    break
 
-
         # Send marker
         # outlet.push_sample([markernames[ind]], timestamp)
-        #outlet.push_sample(additional_stamps + [markernames[ind]], timestamp)
+        # outlet.push_sample(additional_stamps + [markernames[ind]], timestamp)
 
         # Push sample
         if eeg:
             timestamp = time.time()
 
-            marker = additional_stamps +  [markernames[ind]]
+            marker = additional_stamps + [markernames[ind]]
 
             """
             if eeg.backend == "muselsl":
@@ -136,9 +137,8 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
                 mark
             """
 
-            #eeg.push_sample(marker=additional_stamps + marker, timestamp=timestamp)
-            eeg.push_sample(marker=marker,timestamp=timestamp)
-
+            # eeg.push_sample(marker=additional_stamps + marker, timestamp=timestamp)
+            eeg.push_sample(marker=marker, timestamp=timestamp)
 
         if do_fixation:
             mywin.flip()
@@ -149,18 +149,15 @@ def present(eeg: Optional[EEG]=None, save_fn=None,
 
         if len(event.getKeys()) > 0 or (time.time() - start) > (record_duration_float+5):
             break
-        
+
         event.clearEvents()
 
-
-
     # Cleanup
-    if eeg: eeg.stop()
-
+    if eeg:
+        eeg.stop()
 
     if do_fixation:
         mywin.close()
-
 
     return trials
 
@@ -180,12 +177,14 @@ def show_instructions(duration):
     instruction_text = instruction_text % duration
 
     # graphics
-    mywin = visual.Window([1600, 900], monitor="testMonitor", units="deg", fullscr=True)
+    mywin = visual.Window(
+        [1600, 900], monitor="testMonitor", units="deg", fullscr=True)
 
     mywin.mouseVisible = False
 
     # Instructions
-    text = visual.TextStim(win=mywin, text=instruction_text, color=[-1, -1, -1])
+    text = visual.TextStim(
+        win=mywin, text=instruction_text, color=[-1, -1, -1])
     text.draw()
     mywin.flip()
     event.waitKeys(keyList="space")
@@ -259,14 +258,9 @@ def main():
 
     (options, args) = parser.parse_args()
     trials_df = present(
-        duration=options.duration,
-        n_trials=options.duration,
-        iti=options.iti,
-        soa=options.soa,
-        jitter=options.jitter,
+        itis=[options.iti],
         secs=options.secs,
         volume=options.volume,
-        random_state=options.random_state,
     )
 
     print(trials_df)
