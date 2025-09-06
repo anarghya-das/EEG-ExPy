@@ -73,7 +73,7 @@ class EEG:
 
         Parameters:
             device (str): name of eeg device used for reading data.
-        
+
             ch_names (array_like or None): array containing custom specified channel names. Useful for custom montagues 
         like when external electrodes are used.
         """
@@ -99,7 +99,8 @@ class EEG:
     def initialize_backend(self):
         if self.backend == "brainflow":
             self._init_brainflow()
-            self.timestamp_channel = BoardShim.get_timestamp_channel(self.brainflow_id)
+            self.timestamp_channel = BoardShim.get_timestamp_channel(
+                self.brainflow_id)
         elif self.backend == "muselsl":
             self._init_muselsl()
             self._muse_get_recent()  # run this at initialization to get some
@@ -165,10 +166,13 @@ class EEG:
             inlet = self._muse_recent_inlet
         else:
             # Initiate a new lsl stream
-            streams = resolve_byprop("type", "EEG", timeout=mlsl_cnsts.LSL_SCAN_TIMEOUT)
+            streams = resolve_byprop(
+                "type", "EEG", timeout=mlsl_cnsts.LSL_SCAN_TIMEOUT)
             if not streams:
-                raise Exception("Couldn't find any stream, is your device connected?")
-            inlet = StreamInlet(streams[0], max_chunklen=mlsl_cnsts.LSL_EEG_CHUNK)
+                raise Exception(
+                    "Couldn't find any stream, is your device connected?")
+            inlet = StreamInlet(
+                streams[0], max_chunklen=mlsl_cnsts.LSL_EEG_CHUNK)
             self._muse_recent_inlet = inlet
 
         info = inlet.info()
@@ -182,7 +186,8 @@ class EEG:
         self.n_channels = n_chans
 
         timeout = (n_samples / sfreq) + 0.5
-        samples, timestamps = inlet.pull_chunk(timeout=timeout, max_samples=n_samples)
+        samples, timestamps = inlet.pull_chunk(
+            timeout=timeout, max_samples=n_samples)
 
         samples = np.array(samples)
         timestamps = np.array(timestamps)
@@ -210,13 +215,16 @@ class EEG:
         # we only create a markers outlet and optionally record the incoming
         # EEG stream to file using the muselsl recorder utility.
         # Create markers stream outlet
-        self.lsl_StreamInfo = StreamInfo("Markers", "Markers", 1, 0, "int32", "eegnb_markers")
+        self.lsl_StreamInfo = StreamInfo(
+            "Markers", "Markers", 1, 0, "int32", "eegnb_markers")
         self.lsl_StreamOutlet = StreamOutlet(self.lsl_StreamInfo)
 
         # Start a lightweight background recording process from LSL to CSV if requested
         if duration is not None and self.save_fn:
-            logger.info(f"Starting LSL recording for {duration}s to {self.save_fn}")
-            self.recording = Process(target=record, args=(duration, self.save_fn))
+            logger.info(
+                f"Starting LSL recording for {duration}s to {self.save_fn}")
+            self.recording = Process(
+                target=record, args=(duration, self.save_fn))
             self.recording.start()
 
         # Allow stream buffers to fill a bit, then mark start
@@ -235,10 +243,13 @@ class EEG:
         if self._lsl_recent_inlet and not restart_inlet:
             inlet = self._lsl_recent_inlet
         else:
-            streams = resolve_byprop("type", "EEG", timeout=mlsl_cnsts.LSL_SCAN_TIMEOUT)
+            streams = resolve_byprop(
+                "type", "EEG", timeout=mlsl_cnsts.LSL_SCAN_TIMEOUT)
             if not streams:
-                raise Exception("Couldn't find any LSL EEG stream. Is your device streaming?")
-            inlet = StreamInlet(streams[0], max_chunklen=mlsl_cnsts.LSL_EEG_CHUNK)
+                raise Exception(
+                    "Couldn't find any LSL EEG stream. Is your device streaming?")
+            inlet = StreamInlet(
+                streams[0], max_chunklen=mlsl_cnsts.LSL_EEG_CHUNK)
             self._lsl_recent_inlet = inlet
 
         info = inlet.info()
@@ -252,7 +263,8 @@ class EEG:
         self.n_channels = n_chans
 
         timeout = (n_samples / sfreq) + 0.5 if sfreq else 2.0
-        samples, timestamps = inlet.pull_chunk(timeout=timeout, max_samples=n_samples)
+        samples, timestamps = inlet.pull_chunk(
+            timeout=timeout, max_samples=n_samples)
 
         samples = np.array(samples)
         timestamps = np.array(timestamps)
@@ -264,7 +276,7 @@ class EEG:
             if ch:  # if metadata present
                 ch_names = [ch.child_value("label")]
                 for i in range(n_chans - 1):
-                    ch = ch.next_sibling() 
+                    ch = ch.next_sibling()
                     lab = ch.child_value("label")
                     if lab != "":
                         ch_names.append(lab)
@@ -276,6 +288,44 @@ class EEG:
 
         df = pd.DataFrame(samples, index=timestamps, columns=ch_names)
         return df
+
+    def _stop_lsl(self):
+        """Gracefully stop LSL-related resources.
+
+        Wait for the background muselsl recorder (if any) to finish before
+        tearing down the marker outlet to avoid reconnect spam on shutdown.
+        """
+        # Best-effort: send a trailing marker to denote end of run
+        try:
+            self.push_sample([0], timestamp=time.time())
+        except Exception:
+            pass
+
+        # If a background recording process was started, wait briefly for it to finish
+        rec = getattr(self, "recording", None)
+        if isinstance(rec, Process):
+            try:
+                if rec.is_alive():
+                    logger.info("Waiting for LSL recording process to finish…")
+                    # Allow a few seconds (record_duration includes a +5s buffer)
+                    rec.join(timeout=7)
+                if rec.is_alive():
+                    logger.warning("LSL recording still running; terminating.")
+                    rec.terminate()
+                    rec.join(timeout=2)
+            finally:
+                self.recording = None
+
+        # Tear down marker outlet/info to release resources
+        try:
+            if hasattr(self, "lsl_StreamOutlet"):
+                self.lsl_StreamOutlet = None
+            if hasattr(self, "lsl_StreamInfo"):
+                self.lsl_StreamInfo = None
+        except Exception:
+            pass
+
+        self.stream_started = False
 
     ##########################
     #   BrainFlow functions  #
@@ -427,8 +477,9 @@ class EEG:
         total_data = np.append(total_data, stim_array, 1)
 
         # Subtract five seconds of settling time from beginning
-        total_data = total_data[5 * self.sfreq :]
-        data_df = pd.DataFrame(total_data, columns=["timestamps"] + ch_names + ["stim"])
+        total_data = total_data[5 * self.sfreq:]
+        data_df = pd.DataFrame(total_data, columns=[
+                               "timestamps"] + ch_names + ["stim"])
         data_df.to_csv(self.save_fn, index=False)
 
     def _brainflow_extract(self, data):
@@ -460,12 +511,14 @@ class EEG:
 
         # pull EEG channel data via brainflow API
         eeg_data = data[:, BoardShim.get_eeg_channels(self.brainflow_id)]
-        timestamps = data[:, BoardShim.get_timestamp_channel(self.brainflow_id)]
+        timestamps = data[:, BoardShim.get_timestamp_channel(
+            self.brainflow_id)]
 
         return ch_names, eeg_data, timestamps
 
     def _brainflow_push_sample(self, marker):
-        last_timestamp = self.board.get_current_board_data(1)[self.timestamp_channel][0]
+        last_timestamp = self.board.get_current_board_data(
+            1)[self.timestamp_channel][0]
         self.markers.append([marker, last_timestamp])
 
     def _brainflow_get_recent(self, n_samples=256):
@@ -531,7 +584,7 @@ class EEG:
         elif self.backend == "muselsl":
             pass
         elif self.backend == "lsl":
-            pass
+            self._stop_lsl()
 
     def get_recent(self, n_samples: int = 256):
         """
