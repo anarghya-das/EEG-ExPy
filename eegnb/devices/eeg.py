@@ -9,7 +9,7 @@ import sys
 import time
 import logging
 from time import sleep
-from multiprocessing import Process
+from multiprocessing import Process, Event
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,123 @@ from eegnb.devices.utils import (
 
 
 logger = logging.getLogger(__name__)
+
+# Dedicated LSL recording worker to preserve channel labels and embed markers
+
+
+def lsl_record_worker(save_fn: str, stop_event, poll_interval: float = 0.05, startup_timeout: float = 10.0):
+    """Record from the first available LSL EEG stream and a 'Markers' stream until stop_event is set.
+
+    Writes a CSV with columns: timestamps, <channel labels...>, stim
+    """
+    try:
+        # Resolve EEG stream and create inlet (retry until available or stop requested)
+        eeg_inlet = None
+        start_wait = time.time()
+        while not stop_event.is_set() and eeg_inlet is None:
+            eeg_streams = resolve_byprop("type", "EEG", timeout=1)
+            if eeg_streams:
+                eeg_inlet = StreamInlet(
+                    eeg_streams[0], max_chunklen=mlsl_cnsts.LSL_EEG_CHUNK, recover=True
+                )
+                break
+            if time.time() - start_wait > startup_timeout:
+                raise RuntimeError(
+                    "No LSL EEG stream found for recording within timeout")
+
+        # Resolve markers stream (optional)
+        marker_inlet = None
+        try:
+            marker_streams = resolve_byprop("type", "Markers", timeout=1)
+            if marker_streams:
+                marker_inlet = StreamInlet(
+                    marker_streams[0], max_chunklen=128, recover=True)
+        except Exception:
+            marker_inlet = None
+
+        # Extract channel labels from EEG stream metadata
+        info = eeg_inlet.info()
+        n_chans = info.channel_count()
+        desc = info.desc()
+        ch_names = []
+        try:
+            ch = desc.child("channels").first_child()
+            if ch:
+                ch_names = [ch.child_value("label")]
+                for _ in range(n_chans - 1):
+                    ch = ch.next_sibling()
+                    lab = ch.child_value("label")
+                    if lab != "":
+                        ch_names.append(lab)
+        except Exception:
+            ch_names = []
+        if not ch_names or len(ch_names) != n_chans:
+            ch_names = [f"eeg_{i}" for i in range(n_chans)]
+
+        # Buffers
+        all_ts = []
+        all_samples = []
+        marker_events = []  # list of (timestamp, value)
+
+        timeout = max(0.01, min(0.25, poll_interval))
+        while not stop_event.is_set():
+            # Pull EEG chunk
+            samples, timestamps = eeg_inlet.pull_chunk(
+                timeout=timeout, max_samples=mlsl_cnsts.LSL_EEG_CHUNK)
+            if timestamps:
+                all_ts.extend(timestamps)
+                all_samples.extend(samples)
+
+            # Pull any marker events
+            if marker_inlet is not None:
+                mvals, m_ts = marker_inlet.pull_chunk(
+                    timeout=0.0, max_samples=256)
+                if m_ts:
+                    # Flatten marker values to ints if provided as lists
+                    for v, ts in zip(mvals, m_ts):
+                        try:
+                            mv = int(v[0]) if isinstance(
+                                v, (list, tuple)) else int(v)
+                        except Exception:
+                            mv = 0
+                        marker_events.append((ts, mv))
+
+        # Build DataFrame
+        if not all_ts:
+            # Nothing captured; still create an empty CSV with headers for traceability
+            df_empty = pd.DataFrame(
+                columns=["timestamps"] + ch_names + ["stim"])
+            df_empty.to_csv(save_fn, index=False)
+            return
+
+        eeg_arr = np.asarray(all_samples, dtype=float)
+        ts_arr = np.asarray(all_ts, dtype=float)
+
+        # Compute stim column by assigning the last marker seen up to each timestamp
+        stim = np.zeros_like(ts_arr, dtype=int)
+        if marker_events:
+            marker_events.sort(key=lambda x: x[0])
+            mi = 0
+            last_val = 0
+            for i, ts in enumerate(ts_arr):
+                while mi < len(marker_events) and marker_events[mi][0] <= ts:
+                    last_val = marker_events[mi][1]
+                    mi += 1
+                stim[i] = last_val
+
+        data_df = pd.DataFrame(eeg_arr, columns=ch_names)
+        data_df.insert(0, "timestamps", ts_arr)
+        data_df["stim"] = stim
+        data_df.to_csv(save_fn, index=False)
+    except Exception as e:
+        # Ensure we write a minimal file to signal an attempt even if error happens
+        try:
+            pd.DataFrame(columns=["timestamps", "stim"]
+                         ).to_csv(save_fn, index=False)
+        except Exception:
+            pass
+        logger.exception(f"LSL record worker failed: {e}")
+
 
 # list of brainflow devices
 brainflow_devices = [
@@ -220,11 +337,15 @@ class EEG:
         self.lsl_StreamOutlet = StreamOutlet(self.lsl_StreamInfo)
 
         # Start a lightweight background recording process from LSL to CSV if requested
-        if duration is not None and self.save_fn:
+        if self.save_fn:
             logger.info(
-                f"Starting LSL recording for {duration}s to {self.save_fn}")
+                f"Starting LSL recording to {self.save_fn} (until stop)")
+            self._lsl_stop_event = Event()
+            # Use local worker that preserves channel labels and markers
             self.recording = Process(
-                target=record, args=(duration, self.save_fn))
+                target=lsl_record_worker, args=(
+                    self.save_fn, self._lsl_stop_event)
+            )
             self.recording.start()
 
         # Allow stream buffers to fill a bit, then mark start
@@ -301,20 +422,25 @@ class EEG:
         except Exception:
             pass
 
-        # If a background recording process was started, wait briefly for it to finish
+        # If a background recording process was started, signal stop and wait briefly for it to finish
         rec = getattr(self, "recording", None)
         if isinstance(rec, Process):
             try:
+                # Signal the recorder to finish and flush
+                stop_evt = getattr(self, "_lsl_stop_event", None)
+                if stop_evt is not None:
+                    stop_evt.set()
                 if rec.is_alive():
                     logger.info("Waiting for LSL recording process to finish…")
-                    # Allow a few seconds (record_duration includes a +5s buffer)
-                    rec.join(timeout=7)
+                    rec.join(timeout=10)
                 if rec.is_alive():
                     logger.warning("LSL recording still running; terminating.")
                     rec.terminate()
-                    rec.join(timeout=2)
+                    rec.join(timeout=3)
             finally:
                 self.recording = None
+                if hasattr(self, "_lsl_stop_event"):
+                    self._lsl_stop_event = None
 
         # Tear down marker outlet/info to release resources
         try:
