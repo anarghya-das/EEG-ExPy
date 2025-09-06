@@ -362,7 +362,7 @@ class EEG:
     def _start_lsl(self, duration):
         # For generic LSL EEG streams we do not start the device stream here;
         # we only create a markers outlet and optionally record the incoming
-        # EEG stream to file using the muselsl recorder utility.
+        # EEG stream to file using the local LSL recorder utility.
         # Create markers stream outlet
         self.lsl_StreamInfo = StreamInfo(
             "Markers", "Markers", 1, 0, "int32", "eegnb_markers")
@@ -373,23 +373,26 @@ class EEG:
             logger.info(
                 f"Starting LSL recording to {self.save_fn} (until stop)")
             self._lsl_stop_event = Event()
-            # Use local worker that preserves channel labels and markers
-            self.recording = Process(
-                target=lsl_record_worker, args=(
-                    self.save_fn, self._lsl_stop_event)
-            )
+            self.recording = Process(target=lsl_record_worker, args=(
+                self.save_fn, self._lsl_stop_event))
             self.recording.start()
 
         # Allow stream buffers to fill a bit, then mark start
         time.sleep(2)
         self.stream_started = True
-        self.push_sample([99], timestamp=time.time())
+        # Let LSL stamp timestamps for proper alignment
+        self.push_sample([99], timestamp=None)
 
     def _lsl_push_sample(self, marker, timestamp):
         # Push to the generic LSL marker outlet; ensure list-like
         if isinstance(marker, (int, np.integer)):
             marker = [int(marker)]
-        self.lsl_StreamOutlet.push_sample(marker, timestamp)
+        # Ignore provided timestamp; let LSL stamp using local clock for alignment
+        try:
+            self.lsl_StreamOutlet.push_sample(marker)
+        except TypeError:
+            from pylsl import local_clock
+            self.lsl_StreamOutlet.push_sample(marker, local_clock())
 
     def _lsl_get_recent(self, n_samples: int = 256, restart_inlet: bool = False):
         # Reuse inlet if available
@@ -450,7 +453,7 @@ class EEG:
         """
         # Best-effort: send a trailing marker to denote end of run
         try:
-            self.push_sample([0], timestamp=time.time())
+            self.push_sample([0], timestamp=None)
         except Exception:
             pass
 

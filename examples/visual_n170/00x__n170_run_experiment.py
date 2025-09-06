@@ -17,9 +17,9 @@ def main():
     # Define some variables
     board_name = "lsl"  # board name
     experiment_name = "visual_n170"  # experiment name
-    subject_id = 0  # test subject id
-    session_nb = 1  # session number
-    record_duration = 5  # recording duration (short for quick test)
+    subject_id = 1  # test subject id
+    session_nb = 0  # session number
+    record_duration = 10  # recording duration (short for quick test)
 
     # generate save path
     save_fn = generate_save_fn(
