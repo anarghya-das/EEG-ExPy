@@ -97,11 +97,16 @@ def lsl_record_worker(save_fn: str, stop_event, poll_interval: float = 0.05, sta
         # Resolve markers stream (optional)
         marker_inlet = None
         try:
-            marker_streams = resolve_byprop("type", "Markers", timeout=1)
+            print(f"DEBUG: Looking for marker streams...")
+            marker_streams = resolve_byprop("type", "Markers", timeout=5)  # Increased timeout
             if marker_streams:
                 marker_inlet = StreamInlet(
                     marker_streams[0], max_chunklen=128, recover=True)
-        except Exception:
+                print(f"DEBUG: Found marker stream: {marker_streams[0].name()}")
+            else:
+                print("DEBUG: No marker stream found - markers will not be recorded")
+        except Exception as e:
+            print(f"DEBUG: Failed to resolve marker stream: {e}")
             marker_inlet = None
 
         # Extract channel labels from EEG stream metadata
@@ -113,12 +118,19 @@ def lsl_record_worker(save_fn: str, stop_event, poll_interval: float = 0.05, sta
         all_samples = []
         marker_events = []  # list of (timestamp, value)
 
+        # Get initial timestamps to understand the clock offset
+        first_eeg_ts = None
+        first_marker_ts = None
+
         timeout = max(0.01, min(0.25, poll_interval))
         while not stop_event.is_set():
             # Pull EEG chunk
             samples, timestamps = eeg_inlet.pull_chunk(
                 timeout=timeout, max_samples=mlsl_cnsts.LSL_EEG_CHUNK)
             if timestamps:
+                if first_eeg_ts is None:
+                    first_eeg_ts = timestamps[0]
+                    print(f"DEBUG: First EEG timestamp: {first_eeg_ts}")
                 all_ts.extend(timestamps)
                 all_samples.extend(samples)
 
@@ -134,7 +146,15 @@ def lsl_record_worker(save_fn: str, stop_event, poll_interval: float = 0.05, sta
                                 v, (list, tuple)) else int(v)
                         except Exception:
                             mv = 0
+                        if first_marker_ts is None:
+                            first_marker_ts = ts
+                            print(f"DEBUG: First marker timestamp: {first_marker_ts}")
                         marker_events.append((ts, mv))
+                        print(f"DEBUG: Received marker: {mv} at {ts}")
+            else:
+                # Log once that no marker inlet is available
+                if len(all_ts) == 1:  # Log only on first EEG sample
+                    print("DEBUG: No marker inlet available - markers will not be recorded")
 
         # Build DataFrame
         if not all_ts:
@@ -156,14 +176,39 @@ def lsl_record_worker(save_fn: str, stop_event, poll_interval: float = 0.05, sta
         # Compute stim column by assigning the last marker seen up to each timestamp
         stim = np.zeros_like(ts_arr, dtype=int)
         if marker_events:
+            print(f"DEBUG: Processing {len(marker_events)} marker events")
+            print(f"DEBUG: EEG timestamp range: {ts_arr[0]:.3f} to {ts_arr[-1]:.3f}")
+            print(f"DEBUG: Marker timestamp range: {marker_events[0][0]:.3f} to {marker_events[-1][0]:.3f}")
+            
+            # Calculate clock offset between EEG and marker streams
+            # If timestamps are on different scales, we need to synchronize them
+            eeg_start = ts_arr[0]
+            marker_start = marker_events[0][0]
+            
+            # Check if timestamps are on vastly different scales (different clocks)
+            if abs(eeg_start - marker_start) > 1000:  # More than 1000 seconds difference suggests different clocks
+                print(f"DEBUG: Clock offset detected. EEG start: {eeg_start}, Marker start: {marker_start}")
+                # Calculate offset and adjust marker timestamps
+                offset = eeg_start - marker_start
+                print(f"DEBUG: Applying clock offset: {offset}")
+                
+                # Apply offset to all marker timestamps
+                marker_events = [(ts + offset, val) for ts, val in marker_events]
+                print(f"DEBUG: Adjusted marker timestamp range: {marker_events[0][0]:.3f} to {marker_events[-1][0]:.3f}")
+            
             marker_events.sort(key=lambda x: x[0])
             mi = 0
             last_val = 0
+            matches = 0
             for i, ts in enumerate(ts_arr):
                 while mi < len(marker_events) and marker_events[mi][0] <= ts:
                     last_val = marker_events[mi][1]
+                    matches += 1
                     mi += 1
                 stim[i] = last_val
+            print(f"DEBUG: Applied {matches} marker timestamps to EEG data")
+        else:
+            print("DEBUG: No marker events found - stim column will be all zeros")
 
         data_df = pd.DataFrame(eeg_arr, columns=ch_names)
         data_df.insert(0, "timestamps", ts_arr)
@@ -364,35 +409,44 @@ class EEG:
         # we only create a markers outlet and optionally record the incoming
         # EEG stream to file using the local LSL recorder utility.
         # Create markers stream outlet
+        print("DEBUG: Creating LSL markers stream outlet...")
         self.lsl_StreamInfo = StreamInfo(
             "Markers", "Markers", 1, 0, "int32", "eegnb_markers")
         self.lsl_StreamOutlet = StreamOutlet(self.lsl_StreamInfo)
+        print("DEBUG: LSL markers stream outlet created")
+
+        # Give the marker stream time to become available before starting recorder
+        time.sleep(1)
 
         # Start a lightweight background recording process from LSL to CSV if requested
         if self.save_fn:
-            logger.info(
-                f"Starting LSL recording to {self.save_fn} (until stop)")
+            print(f"DEBUG: Starting LSL recording to {self.save_fn}")
             self._lsl_stop_event = Event()
             self.recording = Process(target=lsl_record_worker, args=(
                 self.save_fn, self._lsl_stop_event))
             self.recording.start()
+            print("DEBUG: LSL recording process started")
 
         # Allow stream buffers to fill a bit, then mark start
         time.sleep(2)
         self.stream_started = True
         # Let LSL stamp timestamps for proper alignment
+        print("DEBUG: Pushing initial marker (99)")
         self.push_sample([99], timestamp=None)
 
     def _lsl_push_sample(self, marker, timestamp):
         # Push to the generic LSL marker outlet; ensure list-like
         if isinstance(marker, (int, np.integer)):
             marker = [int(marker)]
+        print(f"DEBUG: Pushing marker {marker}")
         # Ignore provided timestamp; let LSL stamp using local clock for alignment
         try:
             self.lsl_StreamOutlet.push_sample(marker)
+            print(f"DEBUG: Successfully pushed marker {marker}")
         except TypeError:
             from pylsl import local_clock
             self.lsl_StreamOutlet.push_sample(marker, local_clock())
+            print(f"DEBUG: Successfully pushed marker {marker} with timestamp")
 
     def _lsl_get_recent(self, n_samples: int = 256, restart_inlet: bool = False):
         # Reuse inlet if available
