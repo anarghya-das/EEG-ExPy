@@ -29,6 +29,48 @@ from eegnb.devices.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Helper to extract EEG-only indices and labels from LSL stream info
+
+
+def _lsl_eeg_indices_and_labels(info) -> tuple[list[int], list[str]]:
+    """Return indices and labels for channels with type 'EEG'.
+
+    If no channel types are present in metadata, fall back to all channels.
+    If types exist but none are 'EEG', fall back to all channels.
+    """
+    n_chans = info.channel_count()
+    desc = info.desc()
+    eeg_indices: list[int] = []
+    labels: list[str] = []
+    all_types: list[str] = []
+    all_labels: list[str] = []
+
+    try:
+        ch = desc.child("channels").first_child()
+        for i in range(n_chans):
+            if i > 0:
+                ch = ch.next_sibling()
+            lab = ch.child_value("label") if ch else ""
+            ctype = ch.child_value("type") if ch else ""
+            all_labels.append(lab if lab != "" else f"eeg_{i}")
+            all_types.append(ctype)
+    except Exception:
+        # No metadata; assume all EEG with generic labels
+        return list(range(n_chans)), [f"eeg_{i}" for i in range(n_chans)]
+
+    typed_present = any(t and t.strip() for t in all_types)
+    if typed_present:
+        eeg_indices = [i for i, t in enumerate(
+            all_types) if (t or "").strip().lower() == "eeg"]
+        if not eeg_indices:
+            # types exist but none 'EEG' -> fallback to all
+            eeg_indices = list(range(n_chans))
+    else:
+        eeg_indices = list(range(n_chans))
+
+    labels = [all_labels[i] for i in eeg_indices]
+    return eeg_indices, labels
+
 # Dedicated LSL recording worker to preserve channel labels and embed markers
 
 
@@ -64,22 +106,7 @@ def lsl_record_worker(save_fn: str, stop_event, poll_interval: float = 0.05, sta
 
         # Extract channel labels from EEG stream metadata
         info = eeg_inlet.info()
-        n_chans = info.channel_count()
-        desc = info.desc()
-        ch_names = []
-        try:
-            ch = desc.child("channels").first_child()
-            if ch:
-                ch_names = [ch.child_value("label")]
-                for _ in range(n_chans - 1):
-                    ch = ch.next_sibling()
-                    lab = ch.child_value("label")
-                    if lab != "":
-                        ch_names.append(lab)
-        except Exception:
-            ch_names = []
-        if not ch_names or len(ch_names) != n_chans:
-            ch_names = [f"eeg_{i}" for i in range(n_chans)]
+        eeg_indices, ch_names = _lsl_eeg_indices_and_labels(info)
 
         # Buffers
         all_ts = []
@@ -118,6 +145,12 @@ def lsl_record_worker(save_fn: str, stop_event, poll_interval: float = 0.05, sta
             return
 
         eeg_arr = np.asarray(all_samples, dtype=float)
+        # Select only EEG channels by indices
+        try:
+            eeg_arr = eeg_arr[:, eeg_indices]
+        except Exception:
+            # Shape mismatch fallback: keep as-is
+            pass
         ts_arr = np.asarray(all_ts, dtype=float)
 
         # Compute stim column by assigning the last marker seen up to each timestamp
@@ -309,14 +342,13 @@ class EEG:
         samples = np.array(samples)
         timestamps = np.array(timestamps)
 
-        ch = description.child("channels").first_child()
-        ch_names = [ch.child_value("label")]
-        for i in range(n_chans):
-            ch = ch.next_sibling()
-            lab = ch.child_value("label")
-            if lab != "":
-                ch_names.append(lab)
-
+        # Get EEG-only indices and labels if available
+        eeg_indices, ch_names = _lsl_eeg_indices_and_labels(info)
+        # Restrict to EEG channels only
+        try:
+            samples = samples[:, eeg_indices]
+        except Exception:
+            pass
         df = pd.DataFrame(samples, index=timestamps, columns=ch_names)
         return df
 
