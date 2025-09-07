@@ -19,7 +19,7 @@ def main():
     experiment_name = "visual_n170"  # experiment name
     subject_id = 1  # test subject id
     session_nb = 0  # session number
-    record_duration = 10  # recording duration (short for quick test)
+    record_duration = 120  # recording duration (short for quick test)
 
     # generate save path
     save_fn = generate_save_fn(

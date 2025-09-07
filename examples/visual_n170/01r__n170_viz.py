@@ -54,12 +54,14 @@ eegnb_data_path = os.path.join(os.path.expanduser('~/'), '.eegnb', 'data')
 n170_data_path = os.path.join(eegnb_data_path, 'visual-N170', 'eegnb_examples')
 
 # If dataset hasn't been downloaded yet, download it
-if not os.path.isdir(n170_data_path):
-    fetch_dataset(data_dir=eegnb_data_path,
-                  experiment='visual-N170', site='eegnb_examples')
+# if not os.path.isdir(n170_data_path):
+    # fetch_dataset(data_dir=eegnb_data_path,
+                #   experiment='visual-N170', site='eegnb_examples')
+print(eegnb_data_path)
+print(n170_data_path)
 
 subject = 1
-session = 1
+session = 0
 raw = load_data(subject, session,
                 experiment='visual-N170', site='eegnb_examples', device_name='muse2016_bfn',
                 data_dir=eegnb_data_path)
