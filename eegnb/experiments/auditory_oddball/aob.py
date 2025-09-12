@@ -11,9 +11,8 @@ from typing import Optional
 
 
 class AuditoryOddball(Experiment.BaseExperiment):
-    
-    def __init__(self, duration=120, eeg: Optional[EEG]=None, save_fn=None, n_trials = 2010, iti = 0.3, soa = 0.2, jitter = 0.2, secs=0.2, volume=0.8, random_state=42, s1_freq="C", s2_freq="D", s1_octave=5, s2_octave=6):
 
+    def __init__(self, duration=120, eeg: Optional[EEG] = None, save_fn=None, n_trials=2010, iti=0.3, soa=0.2, jitter=0.2, secs=0.2, volume=0.8, random_state=42, s1_freq="C", s2_freq="D", s1_octave=5, s2_octave=6):
         """
 
         Auditory Oddball Experiment
@@ -48,12 +47,17 @@ class AuditoryOddball(Experiment.BaseExperiment):
 
     def load_stimulus(self):
         """ Loads the Stimulus """
-        
+
         # Set up trial parameters
         np.random.seed(self.random_state)
-        
+        devices = sound.getDevices()  # returns dict of all devices
+        print(devices)
+        selected_name = devices[-1]
+        print(f"Using audio device: {selected_name}")
+        prefs.hardware['audioDevice'] = selected_name
         # Initialize stimuli
-        aud1, aud2 = sound.Sound(self.s1_freq, octave=self.s1_octave, secs=self.secs), sound.Sound(self.s2_freq, octave=self.s2_octave, secs=self.secs)
+        aud1, aud2 = sound.Sound(self.s1_freq, octave=self.s1_octave, secs=self.secs), sound.Sound(
+            self.s2_freq, octave=self.s2_octave, secs=self.secs)
         aud1.setVolume(self.volume)
         aud2.setVolume(self.volume)
         self.auds = [aud1, aud2]
@@ -65,12 +69,13 @@ class AuditoryOddball(Experiment.BaseExperiment):
         self.trials["soa"] = self.soa
         self.trials["secs"] = self.secs
 
-        self.fixation = visual.GratingStim(win=self.window, size=0.2, pos=[0, 0], sf=0, rgb=[1, 0, 0])
+        self.fixation = visual.GratingStim(win=self.window, size=0.2, pos=[
+                                           0, 0], sf=0, rgb=[1, 0, 0])
         self.fixation.setAutoDraw(True)
         self.window.flip()
 
-        return 
-    
+        return
+
     def present_stimulus(self, idx: int):
         """ Presents the Stimulus """
 
@@ -85,5 +90,3 @@ class AuditoryOddball(Experiment.BaseExperiment):
             marker = [self.markernames[ind]]
             marker = list(map(int, marker))
             self.eeg.push_sample(marker=marker, timestamp=timestamp)
-
-
